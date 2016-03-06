@@ -1,0 +1,276 @@
+<?php
+/**
+ * @file
+ * 用于实现微信支付
+ * 
+ */
+
+
+/**
+ * 支付完成的回调
+ * @return [type] [description]
+ */
+function wechat_pay_menu(){
+	$items['wechatpay/notify'] = array(
+		'page callback' => 'wechat_pay_process_notify',
+		'access callback' => TRUE,
+		'type' => MENU_CALLBACK
+	);
+	
+	$items['wechatpay/notify'] = array(
+		'type' => MENU_CALLBACK,
+		'page callback' => 'wechat_pay_notify',
+		'access callback' => TRUE,
+		'delivery callback' => 'drupal_json_output'
+	);
+	return $items;
+}
+
+/**
+ * 获取配置信息
+ */
+function wechat_pay_get_configs($order, $order_wrapper) {
+	global $user;
+	//$order = commerce_order_load($order_id);
+	
+	require_once "sdk/lib/WxPay.Api.php";
+	require_once "sdk/WxPay.JsApiPay.php";
+	require_once 'sdk/log.php';
+	
+	$appID = variable_get('wechat_appid');
+	$appSecret = variable_get('wechat_appsecret');
+	
+	//初始化日志
+	$logHandler= new CLogFileHandler(dirname(__FILE__) . "/sdk/logs/".date('Y-m-d').'.log');
+	$log = Log::Init($logHandler, 15);
+
+	//①、获取用户openid
+	$tools = new JsApiPay();
+	$query = db_select('wechat_user', 'w')->fields('w', array('openid'))->condition('uid', $user->uid, '=')->execute()->fetchAssoc();
+	$openId = isset($query['openid']) ? $query['openid'] : 'ok34pxDfSFbj7FwLSe5ludZcZdCY';
+	//print_r($openID);
+	//②、统一下单
+	$input = new WxPayUnifiedOrder();
+	$l = 7 - strlen($order->order_number);
+	$c = '';
+	for($i = 0; $i < $l; $i++) {
+		$c .= '0';
+	}
+	$input->SetBody("订单：AXH" . $c . $order->order_number);
+	$input->SetAttach($order->order_id); //订单附加信息，回调中原样返回
+	$input->SetProduct_id($order->order_id); //设置订单ID
+	$input->SetOut_trade_no(WxPayConfig::MCHID.date("YmdHis"));
+	$input->SetTotal_fee($order_wrapper->commerce_order_total->value()['amount']); //总金额
+	//$input->SetTotal_fee("1");
+	$input->SetTime_start(date("YmdHis"));
+	$input->SetTime_expire(date("YmdHis", time() + 600));
+	$input->SetGoods_tag(""); //商品标记
+	//$input->SetNotify_url("http://paysdk.weixin.qq.com/example/notify.php"); //回调地址
+	$input->SetNotify_url("http://www.aixihai.net/wechatpay/notify");
+	$input->SetTrade_type("JSAPI");
+	$input->SetOpenid($openId);
+	$order = WxPayApi::unifiedOrder($input);
+	$jsApiParameters = $tools->GetJsApiParameters($order);
+
+	//获取共享收货地址js函数参数
+	//$editAddress = $tools->GetEditAddressParameters();
+	return $jsApiParameters;
+}
+
+/**
+ * hook_commerce_payment_method_info 添加一个支付方式
+ * @return [type] [description]
+ */
+function wechat_pay_commerce_payment_method_info() {
+  $payment_methods = array();
+
+  $payment_methods['wechatpay'] = array(
+    'base' => 'wechat_pay',
+    'title' => t('wechat pay'),
+    'terminal' => TRUE,
+    'offsite' => FALSE,
+    'offsite_autoredirect' => FALSE,
+  );
+
+  return $payment_methods;
+}
+
+function wechat_pay_notify() {
+	$n = new wechatNotify();
+	$n->Handle();  //调用回调方法
+}
+
+//设置回调方法
+require_once 'sdk/lib/WxPay.Data.php';
+require_once 'sdk/lib/WxPay.Notify.php';
+class wechatNotify extends WxPayNotify {
+	public function NotifyProcess($data, &$msg) {
+		watchdog('status', json_encode($data));
+		watchdog('status', json_encode($msg));
+		return false;
+	}
+}
+
+/**
+ * 生成配置表单,Payment method callback: settings form.
+ * @return [type] [description]
+ */
+/*function wechat_pay_settings_form($settings = NULL){
+	$settings = (array) $settings + array(
+		'wechat_pay_appid' => '',
+		'wechat_pay_partner' => '',
+		'wechat_pay_appkey' => '',
+		'wechat_pay_partnerkey' => '',
+		'wechat_pay_appsercert' => '',
+		'wechat_pay_signtype' => 'sha1'
+	);
+
+	$form['wechat_pay_signtype'] = array(
+		'#type' => 'select',
+		'#title' => '选择编码方式',
+		'#default_value' => $settings['wechat_pay_signtype'],
+		'#options' => array(
+			'sha1' => 'SHA1'
+		)
+	);
+
+	$form['wechat_pay_appid'] = array(
+    	'#type' => 'textfield',
+    	'#title' => '设置你的微信支付AppID',
+    	'#default_value' => $settings['wechat_pay_appid'],
+    	'#description' => '微信支付商户ID'
+    );
+
+    $form['wechat_pay_partner'] = array(
+    	'#type' => 'textfield',
+    	'#title' => '设置你的财付通商户号',
+    	'#default_value' => $settings['wechat_pay_partner'],
+    	'#description' => '财付通商户号'
+    );
+
+    $form['wechat_pay_appkey'] = array(
+    	'#type' => 'textfield',
+    	'#title' => '设置你的微信支付AppKey',
+    	'#default_value' => $settings['wechat_pay_appkey'],
+    	'#description' => '微信支付商户AppKey'
+    );
+
+    $form['wechat_pay_partnerkey'] = array(
+    	'#type' => 'textfield',
+    	'#title' => '设置你的微信支付PartnerKey',
+    	'#default_value' => $settings['wechat_pay_partnerkey'],
+    	'#description' => '微信支付商户PartnerKey'
+    );
+
+    $form['wechat_pay_appsercert'] = array(
+    	'#type' => 'textfield',
+    	'#title' => '设置你的微信支付AppSercert',
+    	'#default_value' => $settings['wechat_pay_appsercert'],
+    	'#description' => '微信支付商户AppSercert'
+    );
+
+    return $form;
+}*/
+
+/**
+ * 处理订单结账。
+ * @param  [type] $form       [description]
+ * @param  [type] $form_state [description]
+ * @return [type]             [description]
+ */
+/*function wechat_pay_submit_form($payment_method, $pane_values, $checkout_pane, $order){
+	$pm = $payment_method['settings'];
+	define(APPID , $pm['wechat_pay_appid']);  //appid
+	define(APPKEY , $pm['wechat_pay_appkey']); //paysign key
+	define(SIGNTYPE, $pm['wechat_pay_signtype']); //method
+	define(PARTNERKEY,$pm['wechat_pay_partnerkey']);//通加密串
+	define(APPSERCERT, $pm['wechat_pay_appsercert']);
+	include_once("sdk/WxPayHelper.php");
+	
+	$commonUtil = new CommonUtil();
+	$wxPayHelper = new WxPayHelper();
+
+	$wxPayHelper->setParameter("bank_type", "WX");
+	$wxPayHelper->setParameter("body", "订单");
+	$wxPayHelper->setParameter("partner", $pm['wechat_pay_partner']);
+	$wxPayHelper->setParameter("out_trade_no", $order->order_number);
+	$wxPayHelper->setParameter("total_fee", $order->commerce_order_total['und'][0]['amount']);
+	$wxPayHelper->setParameter("fee_type", "1");
+	$wxPayHelper->setParameter("notify_url", 'http://' . $_SERVER['HTTP_HOST'] . '/wechatpay/notify');
+	$wxPayHelper->setParameter("spbill_create_ip", $order->hostname);
+	$wxPayHelper->setParameter("input_charset", "UTF-8");
+	
+	
+	$form['wechat_pay_package'] = array(
+		'#type' => 'hidden',
+    	'#default_value' => $wxPayHelper->create_biz_package(),
+    	'#id' => 'wechat_pay_package'
+  	);
+
+	return $form;
+}*/
+
+/**
+ * 结账确认页面
+ * @param  [type] $checkout_pages [description]
+ * @return [type]                 [description]
+ */
+/*function wechat_pay_commerce_checkout_page_info(){
+	drupal_add_js(drupal_get_path('module', 'wechat_pay') . '/js/showpay.js');
+}*/
+
+/**
+ * 支付完成回调页面
+ */
+function wechat_pay_process_notify() {
+  if (empty($_POST)) {
+    return FALSE;
+  }
+  $order = commerce_order_load($_POST['out_trade_no']);
+  $payment_method = commerce_payment_method_instance_load($order->data['payment_method']);
+  // Validate the received notification from Alipay.
+  if (wechat_pay_notify_validate($order, $payment_method, $_POST)) {
+    wechat_pay_notify_submit($order, $payment_method, $_POST);
+  }
+}
+
+//验证返回的数据
+function wecha_pay_notify_validate($order, $payment_method, $notify){
+	return $payment_method['settings']['wechat_pay_partner'] == $notify['partner'];
+}
+
+function wechat_pay_notify_submit($order, $payment_method, $notify) {
+  // 查看是否已经处理过本次交易(载入交易记录)
+  $transactions = commerce_payment_transaction_load_multiple(array(), array('remote_id' => $notify["transaction_id"]));
+  if (!empty($transactions)) {
+    // @TODO: Load the prior transaction ID and update with the capture values.
+    // There is probably some special handling necessary in this case.
+    $transaction = reset($transactions);
+  }
+  else {
+    // 创建一个新的支付交易
+    $transaction = commerce_payment_transaction_new($payment_method['method_id'], $order->order_id);
+    $transaction->instance_id = $payment_method['instance_id'];
+  }
+  // 交易总金额
+  $transaction->amount = commerce_currency_decimal_to_amount($notify['total_fee'], 'CNY');
+  $transaction->currency_code = 'CNY';
+  //微信支付交易号
+  $transaction->remote_id = $notify["transaction_id"];
+  // 交易状态
+  $transaction->remote_status = $notify['trade_state'];
+  $transaction->data['notify'] = $notify;
+
+	switch ($notify['trade_state']) {
+      // 交易成功
+      case 0:
+        $transaction->status = COMMERCE_PAYMENT_STATUS_SUCCESS;
+        $transaction->message = "恭喜，交易成功。";
+        break;
+    }
+  // 保存交易状态
+  commerce_payment_transaction_save($transaction);
+  commerce_payment_redirect_pane_next_page($order);
+  // Record an entry of the transaction with the order and trade numbers.
+  watchdog('commerce_alipay', 'Notify processed for Order @order_number with ID @trade_no.', array('@trade_no' => $notify["transaction_id"], '@order_number' => $order->order_number), WATCHDOG_INFO);
+}
